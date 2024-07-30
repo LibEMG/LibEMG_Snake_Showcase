@@ -1,27 +1,22 @@
 from tkinter import *
 from snake_game import SnakeGame
-from libemg.screen_guided_training import ScreenGuidedTraining
-from libemg.data_handler import OnlineDataHandler, OfflineDataHandler
+from libemg.gui import GUI
+from libemg.data_handler import OnlineDataHandler, OfflineDataHandler, RegexFilter
 from libemg.streamers import myo_streamer
-from libemg.utils import make_regex
 from libemg.feature_extractor import FeatureExtractor
-from libemg.emg_classifier import OnlineEMGClassifier, EMGClassifier
+from libemg.emg_predictor import OnlineEMGClassifier, EMGClassifier
 
 class Menu:
     def __init__(self):
         # Myo Streamer - start streaming the myo data 
-        myo_streamer()
-
-        # Create online data handler to listen for the data
-        self.odh = OnlineDataHandler()
-        self.odh.start_listening()
-
+        streamer, sm = myo_streamer()
+        self.sm = sm
+        self.streamer = streamer
         self.classifier = None
 
         # UI related initialization
         self.window = None
         self.initialize_ui()
-        self.window.mainloop()
 
     def initialize_ui(self):
         # Create the simple menu UI:
@@ -37,6 +32,8 @@ class Menu:
         # Play Snake Button
         Button(self.window, font=("Arial", 18), text = 'Play Snake', command=self.play_snake).pack()
 
+        self.window.mainloop()
+
     def play_snake(self):
         self.window.destroy()
         self.set_up_classifier()
@@ -49,30 +46,24 @@ class Menu:
     def launch_training(self):
         self.window.destroy()
         # Launch training ui
-        training_ui = ScreenGuidedTraining()
+        training_ui = GUI(OnlineDataHandler(self.sm), width=700, height=700, gesture_height=300, gesture_width=300)
         training_ui.download_gestures([1,2,3,4,5], "images/")
-        training_ui.launch_training(self.odh, 2, 3, "images/", "data/", 1)
+        training_ui.start_gui()
         self.initialize_ui()
 
     def set_up_classifier(self):
-        WINDOW_SIZE = 100 
-        WINDOW_INCREMENT = 50
+        WINDOW_SIZE = 40 
+        WINDOW_INCREMENT = 20
 
         # Step 1: Parse offline training data
         dataset_folder = 'data/'
-        classes_values = ["0","1","2","3","4"]
-        classes_regex = make_regex(left_bound = "_C_", right_bound=".csv", values = classes_values)
-        reps_values = ["0", "1", "2"]
-        reps_regex = make_regex(left_bound = "R_", right_bound="_C_", values = reps_values)
-        dic = {
-            "reps": reps_values,
-            "reps_regex": reps_regex,
-            "classes": classes_values,
-            "classes_regex": classes_regex
-        }
+        regex_filters = [
+            RegexFilter(left_bound = "C_", right_bound="_R", values = ["0","1","2","3","4"], description='classes'),
+            RegexFilter(left_bound = "R_", right_bound="_emg.csv", values = ["0", "1", "2"], description='reps'),
+        ]
 
         offline_dh = OfflineDataHandler()
-        offline_dh.get_data(folder_location=dataset_folder, filename_dic=dic, delimiter=",")
+        offline_dh.get_data(folder_location=dataset_folder, regex_filters=regex_filters, delimiter=",")
         train_windows, train_metadata = offline_dh.parse_windows(WINDOW_SIZE, WINDOW_INCREMENT)
 
         # Step 2: Extract features from offline data
@@ -86,17 +77,17 @@ class Menu:
         data_set['training_labels'] = train_metadata['classes']
 
         # Step 4: Create the EMG Classifier
-        o_classifier = EMGClassifier()
-        o_classifier.fit(model="LDA", feature_dictionary=data_set)
+        o_classifier = EMGClassifier(model="LDA")
+        o_classifier.fit(feature_dictionary=data_set)
 
         # Step 5: Create online EMG classifier and start classifying.
-        self.classifier = OnlineEMGClassifier(o_classifier, WINDOW_SIZE, WINDOW_INCREMENT, self.odh, feature_list)
+        self.classifier = OnlineEMGClassifier(o_classifier, WINDOW_SIZE, WINDOW_INCREMENT, OnlineDataHandler(self.sm), feature_list)
         self.classifier.run(block=False) # block set to false so it will run in a seperate process.
 
     def on_closing(self):
         # Clean up all the processes that have been started
-        self.odh.stop_listening()
         self.window.destroy()
-
+        self.streamer.cleanup()
+        
 if __name__ == "__main__":
     menu = Menu()
